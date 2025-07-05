@@ -57,6 +57,8 @@ import {
 } from '@google/gemini-cli-core';
 import { validateAuthMethod } from '../config/auth.js';
 import { useLogger } from './hooks/useLogger.js';
+import { ChatManager } from '../extensions/chatManager.js';
+
 import { StreamingContext } from './contexts/StreamingContext.js';
 import {
   SessionStatsProvider,
@@ -79,6 +81,7 @@ interface AppProps {
   config: Config;
   settings: LoadedSettings;
   startupWarnings?: string[];
+  chatManager?: ChatManager;
 }
 
 export const AppWrapper = (props: AppProps) => (
@@ -87,7 +90,7 @@ export const AppWrapper = (props: AppProps) => (
   </SessionStatsProvider>
 );
 
-const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
+const App = ({ config, settings, startupWarnings = [], chatManager }: AppProps) => {
   useBracketedPaste();
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const { stdout } = useStdout();
@@ -102,6 +105,55 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
     handleNewMessage,
     clearConsoleMessages: clearConsoleMessagesState,
   } = useConsoleMessages();
+
+  // Restore UI history from chat manager on startup
+  useEffect(() => {
+    const restoreUIHistory = async () => {
+      if (!chatManager || !chatManager.isEnabled() || !chatManager.getCurrentChat()) {
+        return;
+      }
+
+      try {
+        const conversationHistory = await chatManager.loadChatHistory();
+        if (conversationHistory.length > 0) {
+          // Convert Gemini Content[] to UI HistoryItem[]
+          const uiHistory: HistoryItem[] = [];
+          let messageId = Date.now();
+
+          for (const content of conversationHistory) {
+            if (content.role === 'user') {
+              const text = content.parts?.map(part => part.text).join('') || '';
+              if (text.trim()) { // Only add non-empty user messages
+                uiHistory.push({
+                  id: messageId++,
+                  type: 'user',
+                  text: text,
+                });
+              }
+            } else if (content.role === 'model') {
+              const text = content.parts?.map(part => part.text).join('') || '';
+              if (text.trim()) { // Only add non-empty model responses
+                uiHistory.push({
+                  id: messageId++,
+                  type: 'gemini',
+                  text: text,
+                });
+              }
+            }
+          }
+
+          if (uiHistory.length > 0) {
+            loadHistory(uiHistory);
+            console.log(`Restored UI history: ${uiHistory.length} items`);
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to restore UI history:', error);
+      }
+    };
+
+    restoreUIHistory();
+  }, [chatManager, loadHistory]); // Only run once on mount
   const { stats: sessionStats } = useSessionStats();
   const [staticNeedsRefresh, setStaticNeedsRefresh] = useState(false);
   const [staticKey, setStaticKey] = useState(0);
@@ -283,6 +335,7 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
     showToolDescriptions,
     setQuittingMessages,
     openPrivacyNotice,
+    chatManager,
   );
   const pendingHistoryItems = [...pendingSlashCommandHistoryItems];
 
@@ -437,6 +490,33 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
 
   const logger = useLogger();
   const [userMessages, setUserMessages] = useState<string[]>([]);
+
+  // Auto-save chat conversation history
+  useEffect(() => {
+    const saveChatHistory = async () => {
+      if (!chatManager || !chatManager.isEnabled() || history.length === 0) return;
+
+      try {
+        // Get the chat history from the Gemini client
+        const chat = config.getGeminiClient().getChat();
+        const conversationHistory = chat.getHistory();
+
+        if (conversationHistory.length > 0) {
+          await chatManager.saveChatHistory(conversationHistory);
+          // Auto-update chat name if needed
+          await chatManager.updateChatNameIfNeeded(conversationHistory, config);
+        }
+      } catch (error) {
+        console.warn('Failed to auto-save chat history:', error);
+      }
+    };
+
+    // Debounce the save operation to avoid too frequent saves
+    const timeoutId = setTimeout(saveChatHistory, 2000); // Save 2 seconds after last change
+    return () => clearTimeout(timeoutId);
+  }, [history, chatManager, config]);
+
+
 
   useEffect(() => {
     const fetchUserMessages = async () => {

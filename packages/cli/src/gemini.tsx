@@ -37,6 +37,8 @@ import {
 } from '@google/gemini-cli-core';
 import { validateAuthMethod } from './config/auth.js';
 import { setMaxSizedBoxDebugging } from './ui/components/shared/MaxSizedBox.js';
+import { ChatManager } from './extensions/chatManager.js';
+
 
 function getNodeMemoryArgs(config: Config): string[] {
   const totalMemoryMB = os.totalmem() / (1024 * 1024);
@@ -100,7 +102,48 @@ export async function main() {
   }
 
   const extensions = loadExtensions(workspaceRoot);
+
+  // Initialize chat manager and load last chat if enabled
+  const chatManager = new ChatManager(workspaceRoot);
+
+  if (chatManager.isEnabled()) {
+    const lastChat = chatManager.getLastChat();
+    if (lastChat) {
+      chatManager.switchToChat(lastChat.id);
+      console.log(`Auto-loaded chat: ${lastChat.name}`);
+    } else {
+      // Create a new chat if none exists
+      const newChat = chatManager.createChat();
+      console.log(`Created new chat: ${newChat.name}`);
+    }
+  }
+
   const config = await loadCliConfig(settings.merged, extensions, sessionId);
+
+  // Load conversation history for the current chat if enabled
+  if (chatManager.isEnabled() && chatManager.getCurrentChat()) {
+    try {
+      const conversationHistory = await chatManager.loadChatHistory();
+      if (conversationHistory.length > 0) {
+        // Filter out empty messages before setting history
+        const cleanHistory = conversationHistory.filter(content => {
+          const text = content.parts?.map(part => part.text).join('') || '';
+          return text.trim().length > 0;
+        });
+
+        if (cleanHistory.length > 0) {
+          // Set the conversation history in the chat instance
+          const chat = config.getGeminiClient().getChat();
+          chat.setHistory(cleanHistory);
+          console.log(`Restored conversation history: ${cleanHistory.length} messages (filtered from ${conversationHistory.length})`);
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to restore conversation history:', error);
+    }
+  }
+
+
 
   // set default fallback to gemini api key
   // this has to go after load cli because that's where the env is set
@@ -176,6 +219,7 @@ export async function main() {
           config={config}
           settings={settings}
           startupWarnings={startupWarnings}
+          chatManager={chatManager}
         />
       </React.StrictMode>,
       { exitOnCtrlC: false },

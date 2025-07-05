@@ -28,6 +28,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { loadSandboxConfig } from './sandboxConfig.js';
+import { MultiApiKeyManager } from '../extensions/multiApiKeyManager.js';
 
 // Simple console logger for now - replace with actual logger if available
 const logger = {
@@ -167,6 +168,15 @@ export async function loadCliConfig(
   sessionId: string,
 ): Promise<Config> {
   loadEnvironment();
+
+  // Initialize multi-API key manager and override GEMINI_API_KEY if enabled
+  const multiApiKeyManager = new MultiApiKeyManager(process.cwd());
+  if (multiApiKeyManager.isEnabled()) {
+    const selectedApiKey = multiApiKeyManager.getCurrentApiKey();
+    if (selectedApiKey) {
+      process.env.GEMINI_API_KEY = selectedApiKey;
+    }
+  }
 
   const argv = await parseArguments();
   const debugMode = argv.debug || false;

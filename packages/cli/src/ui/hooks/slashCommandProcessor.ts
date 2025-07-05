@@ -33,6 +33,8 @@ import { GIT_COMMIT_INFO } from '../../generated/git-commit.js';
 import { formatDuration, formatMemoryUsage } from '../utils/formatters.js';
 import { getCliVersion } from '../../utils/version.js';
 import { LoadedSettings } from '../../config/settings.js';
+import { ChatManager } from '../../extensions/chatManager.js';
+import { MultiApiKeyManager } from '../../extensions/multiApiKeyManager.js';
 
 export interface SlashCommandActionReturn {
   shouldScheduleTool?: boolean;
@@ -77,6 +79,7 @@ export const useSlashCommandProcessor = (
   showToolDescriptions: boolean = false,
   setQuittingMessages: (message: HistoryItem[]) => void,
   openPrivacyNotice: () => void,
+  chatManager?: ChatManager,
 ) => {
   const session = useSessionStats();
   const gitService = useMemo(() => {
@@ -292,6 +295,288 @@ export const useSlashCommandProcessor = (
             duration: formatDuration(wallDuration),
             timestamp: new Date(),
           });
+        },
+      },
+      {
+        name: 'model',
+        description: 'switch to a different model. Usage: /model [model-name]',
+        completion: async () => {
+          // Return common Gemini model names for completion
+          return [
+            'gemini-2.5-flash',
+            'gemini-1.5-pro',
+            'gemini-1.5-flash',
+            'gemini-2.0-flash-exp',
+            'gemini-exp-1206',
+          ];
+        },
+        action: async (_mainCommand, subCommand, _args) => {
+          if (!subCommand) {
+            // Show current model
+            const currentModel = config?.getModel();
+            addMessage({
+              type: MessageType.INFO,
+              content: `Current model: ${currentModel || 'unknown'}`,
+              timestamp: new Date(),
+            });
+            return;
+          }
+
+          try {
+            if (!config) {
+              addMessage({
+                type: MessageType.ERROR,
+                content: 'Config not available.',
+                timestamp: new Date(),
+              });
+              return;
+            }
+
+            // Switch to the new model
+            config.setModel(subCommand);
+            addMessage({
+              type: MessageType.INFO,
+              content: `Switched to model: ${subCommand}`,
+              timestamp: new Date(),
+            });
+          } catch (error) {
+            addMessage({
+              type: MessageType.ERROR,
+              content: `Failed to switch model: ${error instanceof Error ? error.message : String(error)}`,
+              timestamp: new Date(),
+            });
+          }
+        },
+      },
+      {
+        name: 'apiKeys',
+        altName: 'apikeys',
+        description: 'display multi-API key status and statistics',
+        action: async (_mainCommand, _subCommand, _args) => {
+          try {
+            const multiApiKeyManager = new MultiApiKeyManager(config?.getProjectRoot());
+
+            if (!multiApiKeyManager.isEnabled()) {
+              addMessage({
+                type: MessageType.INFO,
+                content: `Multi-API Key Management: Disabled
+
+To enable multi-API key management:
+1. Create a configuration file at ~/.gemini/multi-api-keys.json
+2. Add your API keys and set "enabled": true
+3. Restart Gemini CLI
+
+Example configuration:
+{
+  "enabled": true,
+  "apiKeys": [
+    {
+      "key": "your-first-api-key-here",
+      "name": "Account 1",
+      "weight": 1,
+      "enabled": true
+    },
+    {
+      "key": "your-second-api-key-here",
+      "name": "Account 2",
+      "weight": 1,
+      "enabled": true
+    }
+  ],
+  "strategy": "round-robin",
+  "retryAttempts": 3,
+  "retryDelay": 1000,
+  "healthCheckEnabled": true,
+  "healthCheckInterval": 300000
+}`,
+                timestamp: new Date(),
+              });
+              return;
+            }
+
+            const stats = multiApiKeyManager.getStats();
+
+            let statusMessage = `Multi-API Key Status:
+Enabled: ${stats.enabled}
+Strategy: ${stats.strategy}
+Total Keys: ${stats.totalKeys}
+Available Keys: ${stats.availableKeys}
+Current Index: ${stats.currentIndex}
+
+Key Details:`;
+
+            stats.keys.forEach((key, index) => {
+              const statusIcon = key.isAvailable ? '✓🟢' : '✗🔴';
+              const lastUsedStr = key.lastUsed
+                ? new Date(key.lastUsed).toLocaleString()
+                : 'Never';
+
+              statusMessage += `\n${index + 1}. ${statusIcon} ${key.name} - Errors: ${key.errorCount}, Last used: ${lastUsedStr}`;
+            });
+
+            statusMessage += '\n\n🟢 = Available for selection, 🔴 = Unavailable';
+
+            addMessage({
+              type: MessageType.INFO,
+              content: statusMessage,
+              timestamp: new Date(),
+            });
+          } catch (error) {
+            addMessage({
+              type: MessageType.ERROR,
+              content: `Failed to get API key status: ${error instanceof Error ? error.message : String(error)}`,
+              timestamp: new Date(),
+            });
+          }
+        },
+      },
+      {
+        name: 'chats',
+        description: 'manage chat sessions. Usage: /chats [list|switch <number>|new [name]]',
+        completion: async () => {
+          return ['list', 'switch', 'new'];
+        },
+        action: async (_mainCommand, subCommand, args) => {
+          if (!chatManager) {
+            addMessage({
+              type: MessageType.ERROR,
+              content: 'Chat manager not available.',
+              timestamp: new Date(),
+            });
+            return;
+          }
+
+          if (!chatManager.isEnabled()) {
+            addMessage({
+              type: MessageType.INFO,
+              content: `Chat Management: Disabled
+
+To enable chat management, create ~/.gemini/chat-config.json:
+{
+  "enabled": true,
+  "autoLoad": true,
+  "maxChats": 50,
+  "autoNaming": true,
+  "namingModel": "gemini-2.5-flash"
+}`,
+              timestamp: new Date(),
+            });
+            return;
+          }
+
+          try {
+            if (!subCommand || subCommand === 'list') {
+              // List all chats
+              const chatsOutput = chatManager.getChatsCommand();
+              addMessage({
+                type: MessageType.INFO,
+                content: chatsOutput,
+                timestamp: new Date(),
+              });
+              return;
+            }
+
+            if (subCommand === 'switch') {
+              if (!args) {
+                addMessage({
+                  type: MessageType.ERROR,
+                  content: 'Please specify a chat number to switch to. Usage: /chats switch <number>',
+                  timestamp: new Date(),
+                });
+                return;
+              }
+
+              const chatNumber = parseInt(args.trim(), 10);
+              if (isNaN(chatNumber) || chatNumber < 1) {
+                addMessage({
+                  type: MessageType.ERROR,
+                  content: 'Please provide a valid chat number.',
+                  timestamp: new Date(),
+                });
+                return;
+              }
+
+              const chats = chatManager.getAllChats();
+              if (chatNumber > chats.length) {
+                addMessage({
+                  type: MessageType.ERROR,
+                  content: `Chat ${chatNumber} not found. Available chats: 1-${chats.length}`,
+                  timestamp: new Date(),
+                });
+                return;
+              }
+
+              const targetChat = chats[chatNumber - 1];
+              const switchedChat = chatManager.switchToChat(targetChat.id);
+
+              if (switchedChat) {
+                // Load the chat history (now that we've switched to the chat)
+                const history = await chatManager.loadChatHistory();
+                if (history && history.length > 0) {
+                  // Convert Content[] to HistoryItemWithoutId[] format expected by loadHistory
+                  const historyItems: HistoryItemWithoutId[] = history.map((content) => {
+                    const text = content.parts?.map(part => part.text).join('') || '';
+                    if (content.role === 'user') {
+                      return { type: 'user', text } as HistoryItemWithoutId;
+                    } else {
+                      return { type: 'gemini', text } as HistoryItemWithoutId;
+                    }
+                  });
+
+                  // Clear current history and load the chat history
+                  clearItems();
+                  historyItems.forEach((item, index) => {
+                    addItem(item, Date.now() + index);
+                  });
+
+                  // Set the history in the Gemini client
+                  await config?.getGeminiClient()?.setHistory(history);
+                }
+
+                addMessage({
+                  type: MessageType.INFO,
+                  content: `Switched to chat: ${switchedChat.name}`,
+                  timestamp: new Date(),
+                });
+              } else {
+                addMessage({
+                  type: MessageType.ERROR,
+                  content: 'Failed to switch to the specified chat.',
+                  timestamp: new Date(),
+                });
+              }
+              return;
+            }
+
+            if (subCommand === 'new') {
+              const chatName = args ? args.trim() : undefined;
+              const newChat = chatManager.createChat(chatName);
+
+              // Clear current history and start fresh
+              clearItems();
+              await config?.getGeminiClient()?.resetChat();
+              refreshStatic();
+
+              addMessage({
+                type: MessageType.INFO,
+                content: `Created new chat: ${newChat.name}`,
+                timestamp: new Date(),
+              });
+              return;
+            }
+
+            addMessage({
+              type: MessageType.ERROR,
+              content: `Unknown chats command: ${subCommand}. Available: list, switch, new`,
+              timestamp: new Date(),
+            });
+          } catch (error) {
+            addMessage({
+              type: MessageType.ERROR,
+              content: `Failed to execute chats command: ${error instanceof Error ? error.message : String(error)}`,
+              timestamp: new Date(),
+            });
+          }
         },
       },
       {
@@ -1060,6 +1345,7 @@ export const useSlashCommandProcessor = (
     pendingCompressionItemRef,
     setPendingCompressionItem,
     openPrivacyNotice,
+    chatManager,
   ]);
 
   const handleSlashCommand = useCallback(

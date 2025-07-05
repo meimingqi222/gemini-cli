@@ -56,6 +56,41 @@ Slash commands provide meta-level control over the CLI itself.
       - **Description:** Reload the hierarchical instructional memory from all `GEMINI.md` files found in the configured locations (global, project/ancestors, and sub-directories). This command updates the model with the latest `GEMINI.md` content.
     - **Note:** For more details on how `GEMINI.md` files contribute to hierarchical memory, see the [CLI Configuration documentation](./configuration.md#4-geminimd-files-hierarchical-instructional-context).
 
+- **`/model`**
+  - **Description:** Switch or display the current Gemini model being used in the session.
+  - **Usage:**
+    - `/model` - Display the current model and whether it was switched during the session
+    - `/model <model_name>` - Switch to the specified model (e.g., `gemini-1.5-pro`, `gemini-2.5-flash`)
+  - **Examples:**
+    - `/model` - Shows current model
+    - `/model gemini-2.5-flash` - Switches to Gemini 2.5 Flash
+    - `/model gemini-1.5-pro` - Switches to Gemini 1.5 Pro
+  - **Note:** Model switching only affects the current session. The default model for new sessions is still determined by the `--model` command-line argument or `GEMINI_MODEL` environment variable.
+
+- **`/chats`**
+  - **Description:** Manage chat conversations with automatic saving and loading.
+  - **Sub-commands:**
+    - **`list`** (or no sub-command):
+      - **Description:** List all available chats for the current workspace, showing chat names, message counts, and last used timestamps.
+    - **`switch <number>`**:
+      - **Description:** Switch to a specific chat by its number from the list. This will clear the current conversation and load the selected chat's history.
+    - **`new [name]`**:
+      - **Description:** Create a new chat with an optional custom name. If no name is provided, it will be auto-generated based on the conversation content.
+  - **Examples:**
+    - `/chats` - List all chats
+    - `/chats switch 2` - Switch to chat number 2
+    - `/chats new "Project Planning"` - Create a new chat with a custom name
+  - **Note:** Chats are automatically filtered by workspace directory and stored in `~/.gemini/chats/`.
+
+- **`/apikeys`** (or **`/apiKeys`**)
+  - **Description:** Display the status and statistics of multi-API key management system.
+  - **Usage:** `/apikeys` - Shows detailed information about configured API keys including:
+    - Current strategy (round-robin, random, weighted, least-used)
+    - Total and available key counts
+    - Current rotation index
+    - Individual key status, error counts, and last used timestamps
+  - **Note:** Multi-API key management must be enabled by creating `~/.gemini/multi-api-keys.json`. See the Multi-API Key documentation for setup instructions.
+
 - **`/restore`**
   - **Description:** Restores the project files to the state they were in just before a tool was executed. This is particularly useful for undoing file edits made by a tool. If run without a tool call ID, it will list available checkpoints to restore from.
   - **Usage:** `/restore [tool_call_id]`

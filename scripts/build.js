@@ -40,6 +40,7 @@ try {
   execSync('node scripts/sandbox_command.js -q', {
     stdio: 'inherit',
     cwd: root,
+    timeout: 10000, // 10 second timeout
   });
   if (
     process.env.BUILD_SANDBOX === '1' ||
@@ -51,5 +52,6 @@ try {
     });
   }
 } catch {
-  // ignore
+  // ignore sandbox check failures or timeouts
+  console.log('Skipping sandbox build (sandbox command failed or timed out)');
 }
