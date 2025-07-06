@@ -169,13 +169,23 @@ export async function loadCliConfig(
 ): Promise<Config> {
   loadEnvironment();
 
-  // Initialize multi-API key manager and override GEMINI_API_KEY if enabled
+  // Initialize multi-API key manager and store globally for use in retry logic
   const multiApiKeyManager = new MultiApiKeyManager(process.cwd());
+  (global as any).__multiApiKeyManager = multiApiKeyManager;
+
+  // Set initial API key if multi-API key management is enabled
   if (multiApiKeyManager.isEnabled()) {
+    const stats = multiApiKeyManager.getStats();
+    console.log(`🚀 Multi-API Key Management: Enabled with ${stats.totalKeys} keys (${stats.availableKeys} available)`);
+    console.log(`📋 Strategy: ${stats.strategy}, Current Index: ${stats.currentIndex}`);
+
     const selectedApiKey = multiApiKeyManager.getCurrentApiKey();
     if (selectedApiKey) {
       process.env.GEMINI_API_KEY = selectedApiKey;
+      console.log(`🔑 Initial API key set in environment`);
     }
+  } else {
+    console.log(`⚠️  Multi-API Key Management: Disabled`);
   }
 
   const argv = await parseArguments();

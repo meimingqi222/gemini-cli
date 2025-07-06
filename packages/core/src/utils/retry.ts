@@ -12,6 +12,7 @@ export interface RetryOptions {
   maxDelayMs: number;
   shouldRetry: (error: Error) => boolean;
   onPersistent429?: (authType?: string) => Promise<string | null>;
+  onApiKeyError?: (currentKey: string, error: Error) => Promise<string | null>;
   authType?: string;
 }
 
@@ -68,6 +69,7 @@ export async function retryWithBackoff<T>(
     initialDelayMs,
     maxDelayMs,
     onPersistent429,
+    onApiKeyError,
     authType,
     shouldRetry,
   } = {
@@ -112,6 +114,38 @@ export async function retryWithBackoff<T>(
         } catch (fallbackError) {
           // If fallback fails, continue with original error
           console.warn('Fallback to Flash model failed:', fallbackError);
+        }
+      }
+
+      // Try API key rotation for API key users on certain errors
+      if (
+        onApiKeyError &&
+        authType === AuthType.USE_GEMINI &&
+        (errorStatus === 429 || errorStatus === 403 || errorStatus === 401)
+      ) {
+        console.log(`🔄 Retry: Attempting API key rotation due to error ${errorStatus} on attempt ${attempt}/${maxAttempts}`);
+        try {
+          const currentApiKey = process.env.GEMINI_API_KEY;
+          if (currentApiKey) {
+            const nextApiKey = await onApiKeyError(currentApiKey, error as Error);
+            if (nextApiKey && nextApiKey !== currentApiKey) {
+              // Switch to the next API key
+              process.env.GEMINI_API_KEY = nextApiKey;
+              const nextKeyPreview = nextApiKey.substring(0, 20) + '...';
+              console.log(`✅ Retry: Successfully switched to next API key (${nextKeyPreview}) due to error (${errorStatus})`);
+              // Reset some counters for the new key
+              consecutive429Count = 0;
+              currentDelay = initialDelayMs;
+              // Continue to next attempt with new API key
+              continue;
+            } else {
+              console.log(`⚠️  Retry: No alternative API key available for rotation`);
+            }
+          } else {
+            console.log(`⚠️  Retry: No current API key found in environment`);
+          }
+        } catch (apiKeyError) {
+          console.warn('❌ Retry: API key rotation failed:', apiKeyError);
         }
       }
 

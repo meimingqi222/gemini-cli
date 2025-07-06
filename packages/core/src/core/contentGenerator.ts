@@ -52,10 +52,17 @@ export async function createContentGeneratorConfig(
   authType: AuthType | undefined,
   config?: { getModel?: () => string },
 ): Promise<ContentGeneratorConfig> {
+  // Always read fresh environment variables to pick up any API key changes
   const geminiApiKey = process.env.GEMINI_API_KEY;
   const googleApiKey = process.env.GOOGLE_API_KEY;
   const googleCloudProject = process.env.GOOGLE_CLOUD_PROJECT;
   const googleCloudLocation = process.env.GOOGLE_CLOUD_LOCATION;
+
+  // Log current API key for debugging
+  if (geminiApiKey && authType === AuthType.USE_GEMINI) {
+    const keyPreview = geminiApiKey.substring(0, 20) + '...';
+    console.log(`🔧 Config: Creating content generator with API key ${keyPreview}`);
+  }
 
   // Use runtime model from config if available, otherwise fallback to parameter or default
   const effectiveModel = config?.getModel?.() || model || DEFAULT_GEMINI_MODEL;
@@ -121,6 +128,12 @@ export async function createContentGenerator(
     config.authType === AuthType.USE_GEMINI ||
     config.authType === AuthType.USE_VERTEX_AI
   ) {
+    // Log current API key for debugging
+    if (config.apiKey) {
+      const keyPreview = config.apiKey.substring(0, 20) + '...';
+      console.log(`🔗 ContentGenerator: Using API key ${keyPreview}`);
+    }
+
     const googleGenAI = new GoogleGenAI({
       apiKey: config.apiKey === '' ? undefined : config.apiKey,
       vertexai: config.vertexai,

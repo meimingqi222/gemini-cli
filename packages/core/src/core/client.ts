@@ -283,6 +283,7 @@ export class GeminiClient {
       const result = await retryWithBackoff(apiCall, {
         onPersistent429: async (authType?: string) =>
           await this.handleFlashFallback(authType),
+        onApiKeyError: this.createApiKeyErrorHandler(),
         authType: this.config.getContentGeneratorConfig()?.authType,
       });
 
@@ -371,6 +372,7 @@ export class GeminiClient {
       const result = await retryWithBackoff(apiCall, {
         onPersistent429: async (authType?: string) =>
           await this.handleFlashFallback(authType),
+        onApiKeyError: this.createApiKeyErrorHandler(),
         authType: this.config.getContentGeneratorConfig()?.authType,
       });
       return result;
@@ -529,5 +531,26 @@ export class GeminiClient {
     }
 
     return null;
+  }
+
+  /**
+   * Creates an API key error handler for multi-API key rotation.
+   * Returns a function that can be used by the retry mechanism.
+   */
+  private createApiKeyErrorHandler(): ((currentKey: string, error: Error) => Promise<string | null>) | undefined {
+    // Check if multi-API key manager is available globally
+    const multiApiKeyManager = (global as any).__multiApiKeyManager;
+    if (!multiApiKeyManager || !multiApiKeyManager.isEnabled()) {
+      return undefined;
+    }
+
+    return async (currentKey: string, error: Error): Promise<string | null> => {
+      try {
+        return multiApiKeyManager.getNextApiKeyOnError(currentKey, error);
+      } catch (err) {
+        console.warn('Failed to get next API key:', err);
+        return null;
+      }
+    };
   }
 }
