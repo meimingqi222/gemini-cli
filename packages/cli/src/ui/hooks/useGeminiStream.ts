@@ -429,51 +429,66 @@ export const useGeminiStream = (
 
   const processGeminiStreamEvents = useCallback(
     async (
-      stream: AsyncIterable<GeminiEvent>,
+      streamGenerator: AsyncGenerator<GeminiEvent, any, unknown>,
       userMessageTimestamp: number,
       signal: AbortSignal,
     ): Promise<StreamProcessingStatus> => {
       let geminiMessageBuffer = '';
       const toolCallRequests: ToolCallRequestInfo[] = [];
-      for await (const event of stream) {
-        switch (event.type) {
-          case ServerGeminiEventType.Thought:
-            setThought(event.value);
-            break;
-          case ServerGeminiEventType.Content:
-            geminiMessageBuffer = handleContentEvent(
-              event.value,
-              geminiMessageBuffer,
-              userMessageTimestamp,
-            );
-            break;
-          case ServerGeminiEventType.ToolCallRequest:
-            toolCallRequests.push(event.value);
-            break;
-          case ServerGeminiEventType.UserCancelled:
-            handleUserCancelledEvent(userMessageTimestamp);
-            break;
-          case ServerGeminiEventType.Error:
-            handleErrorEvent(event.value, userMessageTimestamp);
-            break;
-          case ServerGeminiEventType.ChatCompressed:
-            handleChatCompressionEvent(event.value);
-            break;
-          case ServerGeminiEventType.ToolCallConfirmation:
-          case ServerGeminiEventType.ToolCallResponse:
-            // do nothing
-            break;
-          default: {
-            // enforces exhaustive switch-case
-            const unreachable: never = event;
-            return unreachable;
+      
+      try {
+        // Process all events from the stream and get the final Turn object
+        let result = await streamGenerator.next();
+        while (!result.done) {
+          const event = result.value;
+          switch (event.type) {
+            case ServerGeminiEventType.Thought:
+              setThought(event.value);
+              break;
+            case ServerGeminiEventType.Content:
+              geminiMessageBuffer = handleContentEvent(
+                event.value,
+                geminiMessageBuffer,
+                userMessageTimestamp,
+              );
+              break;
+            case ServerGeminiEventType.ToolCallRequest:
+              toolCallRequests.push(event.value);
+              break;
+            case ServerGeminiEventType.UserCancelled:
+              handleUserCancelledEvent(userMessageTimestamp);
+              break;
+            case ServerGeminiEventType.Error:
+              handleErrorEvent(event.value, userMessageTimestamp);
+              break;
+            case ServerGeminiEventType.ChatCompressed:
+              handleChatCompressionEvent(event.value);
+              break;
+            case ServerGeminiEventType.ToolCallConfirmation:
+            case ServerGeminiEventType.ToolCallResponse:
+              // do nothing
+              break;
+            default: {
+              // enforces exhaustive switch-case
+              const unreachable: never = event;
+              return unreachable;
+            }
           }
+          result = await streamGenerator.next();
         }
+        
+        // At this point, result.done is true and result.value contains the Turn object
+        // This ensures that the GeminiChat's processStreamResponse method
+        // has completed and called recordHistory to save the conversation
+        const finalTurn = result.value;
+        
+        if (toolCallRequests.length > 0) {
+          scheduleToolCalls(toolCallRequests, signal);
+        }
+        return StreamProcessingStatus.Completed;
+      } catch (error) {
+        throw error;
       }
-      if (toolCallRequests.length > 0) {
-        scheduleToolCalls(toolCallRequests, signal);
-      }
-      return StreamProcessingStatus.Completed;
     },
     [
       handleContentEvent,
@@ -492,6 +507,24 @@ export const useGeminiStream = (
         !options?.isContinuation
       )
         return;
+
+      // Verify chat context before sending message
+      const chat = geminiClient.getChat();
+      const currentHistory = chat.getHistory();
+      console.log(`Pre-send context verification: Chat has ${currentHistory.length} messages`);
+
+      // Log the last few messages for debugging context continuity
+      if (currentHistory.length > 0) {
+        const lastMessages = currentHistory.slice(-Math.min(3, currentHistory.length));
+        console.log('Last messages in chat context before sending:');
+        lastMessages.forEach((msg, idx) => {
+          const text = msg.parts?.[0]?.text?.substring(0, 100) || '';
+          const msgIndex = currentHistory.length - lastMessages.length + idx + 1;
+          console.log(`  ${msgIndex}. ${msg.role}: ${text}...`);
+        });
+      } else {
+        console.warn('WARNING: No chat history found before sending message - context may be lost');
+      }
 
       const userMessageTimestamp = Date.now();
       setShowHelp(false);
@@ -514,9 +547,9 @@ export const useGeminiStream = (
       setInitError(null);
 
       try {
-        const stream = geminiClient.sendMessageStream(queryToSend, abortSignal);
+        const streamGenerator = geminiClient.sendMessageStream(queryToSend, abortSignal);
         const processingStatus = await processGeminiStreamEvents(
-          stream,
+          streamGenerator,
           userMessageTimestamp,
           abortSignal,
         );

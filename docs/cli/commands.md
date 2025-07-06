@@ -89,7 +89,7 @@ Slash commands provide meta-level control over the CLI itself.
     - Total and available key counts
     - Current rotation index
     - Individual key status, error counts, and last used timestamps
-  - **Note:** Multi-API key management must be enabled by creating `~/.gemini/multi-api-keys.json`. See the Multi-API Key documentation for setup instructions.
+  - **Note:** Multi-API key management must be enabled by creating `~/.gemini/multi-api-config.json`. See the Multi-API Key documentation for setup instructions.
 
 - **`/restore`**
   - **Description:** Restores the project files to the state they were in just before a tool was executed. This is particularly useful for undoing file edits made by a tool. If run without a tool call ID, it will list available checkpoints to restore from.

@@ -35,6 +35,7 @@ import {
   logUserPrompt,
   AuthType,
 } from '@google/gemini-cli-core';
+
 import { validateAuthMethod } from './config/auth.js';
 import { setMaxSizedBoxDebugging } from './ui/components/shared/MaxSizedBox.js';
 import { ChatManager } from './extensions/chatManager.js';
@@ -120,28 +121,8 @@ export async function main() {
 
   const config = await loadCliConfig(settings.merged, extensions, sessionId);
 
-  // Load conversation history for the current chat if enabled
-  if (chatManager.isEnabled() && chatManager.getCurrentChat()) {
-    try {
-      const conversationHistory = await chatManager.loadChatHistory();
-      if (conversationHistory.length > 0) {
-        // Filter out empty messages before setting history
-        const cleanHistory = conversationHistory.filter(content => {
-          const text = content.parts?.map(part => part.text).join('') || '';
-          return text.trim().length > 0;
-        });
-
-        if (cleanHistory.length > 0) {
-          // Set the conversation history in the chat instance
-          const chat = config.getGeminiClient().getChat();
-          chat.setHistory(cleanHistory);
-          console.log(`Restored conversation history: ${cleanHistory.length} messages (filtered from ${conversationHistory.length})`);
-        }
-      }
-    } catch (error) {
-      console.warn('Failed to restore conversation history:', error);
-    }
-  }
+  // Note: Chat history restoration is now handled in App.tsx after UI initialization
+  // This ensures proper timing and avoids duplicate restoration logic
 
 
 
@@ -210,8 +191,14 @@ export async function main() {
   let input = config.getQuestion();
   const startupWarnings = await getStartupWarnings();
 
+  // Check if we should start UI mode
+  // Allow UI mode if either:
+  // 1. We have a TTY and no input (normal interactive mode)
+  // 2. TTY is undefined but we have no input (spawned process case)
+  const shouldStartUI = (process.stdin.isTTY === true || process.stdin.isTTY === undefined) && input?.length === 0;
+
   // Render UI, passing necessary config values. Check that there is no command line question.
-  if (process.stdin.isTTY && input?.length === 0) {
+  if (shouldStartUI) {
     setWindowTitle(basename(workspaceRoot), settings);
     render(
       <React.StrictMode>

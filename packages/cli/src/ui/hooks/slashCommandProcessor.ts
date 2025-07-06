@@ -304,10 +304,7 @@ export const useSlashCommandProcessor = (
           // Return common Gemini model names for completion
           return [
             'gemini-2.5-flash',
-            'gemini-1.5-pro',
-            'gemini-1.5-flash',
-            'gemini-2.0-flash-exp',
-            'gemini-exp-1206',
+            'gemini-2.5-pro',
           ];
         },
         action: async (_mainCommand, subCommand, _args) => {
@@ -362,7 +359,7 @@ export const useSlashCommandProcessor = (
                 content: `Multi-API Key Management: Disabled
 
 To enable multi-API key management:
-1. Create a configuration file at ~/.gemini/multi-api-keys.json
+1. Create a configuration file at ~/.gemini/multi-api-config.json
 2. Add your API keys and set "enabled": true
 3. Restart Gemini CLI
 
@@ -513,15 +510,34 @@ To enable chat management, create ~/.gemini/chat-config.json:
                 // Load the chat history (now that we've switched to the chat)
                 const history = await chatManager.loadChatHistory();
                 if (history && history.length > 0) {
-                  // Convert Content[] to HistoryItemWithoutId[] format expected by loadHistory
-                  const historyItems: HistoryItemWithoutId[] = history.map((content) => {
-                    const text = content.parts?.map(part => part.text).join('') || '';
-                    if (content.role === 'user') {
-                      return { type: 'user', text } as HistoryItemWithoutId;
-                    } else {
-                      return { type: 'gemini', text } as HistoryItemWithoutId;
+                  // Skip the first two messages if they are environment context setup
+                  let startIndex = 0;
+                  if (history.length >= 2) {
+                    const firstMessage = history[0];
+                    const secondMessage = history[1];
+
+                    const isEnvContext = firstMessage.role === 'user' &&
+                      firstMessage.parts?.[0]?.text?.includes('This is the Gemini CLI. We are setting up the context for our chat.') &&
+                      secondMessage.role === 'model' &&
+                      secondMessage.parts?.[0]?.text?.includes('Got it. Thanks for the context!');
+
+                    if (isEnvContext) {
+                      startIndex = 2; // Skip environment context messages
                     }
-                  });
+                  }
+
+                  // Convert Content[] to HistoryItemWithoutId[] format expected by loadHistory
+                  const historyItems: HistoryItemWithoutId[] = [];
+                  for (let i = startIndex; i < history.length; i++) {
+                    const content = history[i];
+                    const text = content.parts?.map(part => part.text).join('') || '';
+                    // Add all messages (chatManager already cleaned them)
+                    if (content.role === 'user') {
+                      historyItems.push({ type: 'user', text } as HistoryItemWithoutId);
+                    } else {
+                      historyItems.push({ type: 'gemini', text } as HistoryItemWithoutId);
+                    }
+                  }
 
                   // Clear current history and load the chat history
                   clearItems();
@@ -529,8 +545,23 @@ To enable chat management, create ~/.gemini/chat-config.json:
                     addItem(item, Date.now() + index);
                   });
 
-                  // Set the history in the Gemini client
-                  await config?.getGeminiClient()?.setHistory(history);
+                  // Set the history in the Gemini client (with environment context handling)
+                  const chat = config?.getGeminiClient()?.getChat();
+                  if (chat) {
+                    const currentHistory = chat.getHistory();
+                    if (startIndex > 0) {
+                      // Replace environment context with current one, keep the rest
+                      const newHistory = [
+                        ...currentHistory.slice(0, 2), // Keep current environment context
+                        ...history.slice(2) // Add the rest of the conversation
+                      ];
+                      chat.setHistory(newHistory);
+                    } else {
+                      // No environment context in saved history, just append to current
+                      const newHistory = [...currentHistory, ...history];
+                      chat.setHistory(newHistory);
+                    }
+                  }
                 }
 
                 addMessage({

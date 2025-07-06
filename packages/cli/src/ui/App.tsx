@@ -17,6 +17,7 @@ import {
   type Key as InkKeyType,
 } from 'ink';
 import { StreamingState, type HistoryItem, MessageType } from './types.js';
+import { Content } from '@google/genai';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 import { useGeminiStream } from './hooks/useGeminiStream.js';
 import { useLoadingIndicator } from './hooks/useLoadingIndicator.js';
@@ -109,18 +110,94 @@ const App = ({ config, settings, startupWarnings = [], chatManager }: AppProps) 
   // Restore UI history from chat manager on startup
   useEffect(() => {
     const restoreUIHistory = async () => {
-      if (!chatManager || !chatManager.isEnabled() || !chatManager.getCurrentChat()) {
+      // Ensure all required dependencies are available
+      if (!chatManager || !config || !chatManager.isEnabled() || !chatManager.getCurrentChat()) {
+        console.log('Chat history restoration skipped: missing dependencies or chat disabled');
         return;
       }
 
       try {
+        setIsRestoringHistory(true); // Prevent auto-save during restoration
+        console.log('Starting chat history restoration process...');
+
+        // Wait for Gemini client to be available with retry logic
+        let geminiClient = config.getGeminiClient();
+        let retryCount = 0;
+        const maxRetries = 10;
+
+        while (!geminiClient && retryCount < maxRetries) {
+          console.log(`Waiting for Gemini client... (attempt ${retryCount + 1}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms
+          geminiClient = config.getGeminiClient();
+          retryCount++;
+        }
+
+        if (!geminiClient) {
+          console.error('Gemini client not available after retries, skipping history restoration');
+          return;
+        }
+
+        console.log('Gemini client is now available, proceeding with restoration...');
+
         const conversationHistory = await chatManager.loadChatHistory();
+        console.log(`ChatManager loaded ${conversationHistory.length} messages from storage`);
+
         if (conversationHistory.length > 0) {
-          // Convert Gemini Content[] to UI HistoryItem[]
+          // Get current chat instance
+          const chat = geminiClient.getChat();
+          const currentHistory = chat.getHistory();
+          console.log(`Current chat history has ${currentHistory.length} messages before restoration`);
+
+          // Determine restoration strategy based on saved history content
+          const isFirstMessageEnvContext = conversationHistory.length >= 2 &&
+            conversationHistory[0].role === 'user' &&
+            conversationHistory[0].parts?.[0]?.text?.includes('This is the Gemini CLI. We are setting up the context for our chat.') &&
+            conversationHistory[1].role === 'model' &&
+            conversationHistory[1].parts?.[0]?.text?.includes('Got it. Thanks for the context!');
+
+          console.log(`Environment context detected in saved history: ${isFirstMessageEnvContext}`);
+          console.log(`Current history has environment context: ${currentHistory.length >= 2}`);
+
+          let newHistory: Content[];
+          let uiStartIndex = 0;
+
+          if (isFirstMessageEnvContext) {
+            // Saved history includes environment context - replace with current environment context
+            if (currentHistory.length >= 2) {
+              // Keep current environment context (first 2 messages) and add conversation history
+              newHistory = [
+                ...currentHistory.slice(0, 2), // Current environment context
+                ...conversationHistory.slice(2) // Rest of the conversation
+              ];
+              uiStartIndex = 2; // Skip environment context in UI
+              console.log(`Strategy: Replace saved env context with current, restore ${conversationHistory.length - 2} conversation messages`);
+            } else {
+              // Fallback: use saved history as-is if current doesn't have environment context
+              newHistory = conversationHistory;
+              uiStartIndex = 2; // Skip environment context in UI
+              console.log(`Strategy: Use saved history as-is (${conversationHistory.length} messages) - current has no env context`);
+            }
+          } else {
+            // Saved history doesn't include environment context - append to current
+            newHistory = [...currentHistory, ...conversationHistory];
+            uiStartIndex = 0; // Show all conversation messages in UI
+            console.log(`Strategy: Append ${conversationHistory.length} saved messages to ${currentHistory.length} current messages`);
+          }
+
+          // CRITICAL: Set the complete history to the Gemini client
+          console.log(`Setting new history with ${newHistory.length} total messages to Gemini client`);
+          chat.setHistory(newHistory);
+
+          // Verify the history was set correctly
+          const verifyHistory = chat.getHistory();
+          console.log(`Verification: Chat now has ${verifyHistory.length} messages after restoration`);
+
+          // Convert relevant Gemini Content[] to UI HistoryItem[]
           const uiHistory: HistoryItem[] = [];
           let messageId = Date.now();
 
-          for (const content of conversationHistory) {
+          for (let i = uiStartIndex; i < conversationHistory.length; i++) {
+            const content = conversationHistory[i];
             if (content.role === 'user') {
               const text = content.parts?.map(part => part.text).join('') || '';
               if (text.trim()) { // Only add non-empty user messages
@@ -144,16 +221,26 @@ const App = ({ config, settings, startupWarnings = [], chatManager }: AppProps) 
 
           if (uiHistory.length > 0) {
             loadHistory(uiHistory);
-            console.log(`Restored UI history: ${uiHistory.length} items`);
+            console.log(`Successfully restored UI history: ${uiHistory.length} items`);
           }
+
+          console.log('Chat history restoration completed successfully');
+        } else {
+          console.log('No conversation history found to restore');
         }
       } catch (error) {
-        console.warn('Failed to restore UI history:', error);
+        console.error('Failed to restore chat history:', error);
+        console.error('Error details:', error instanceof Error ? error.stack : error);
+      } finally {
+        setIsRestoringHistory(false); // Re-enable auto-save after restoration
       }
     };
 
-    restoreUIHistory();
-  }, [chatManager, loadHistory]); // Only run once on mount
+    // Execute restoration immediately since all dependencies are available
+    restoreUIHistory().catch(error => {
+      console.error('Failed to restore chat history:', error);
+    });
+  }, [chatManager, config]); // loadHistory is stable, no need to include
   const { stats: sessionStats } = useSessionStats();
   const [staticNeedsRefresh, setStaticNeedsRefresh] = useState(false);
   const [staticKey, setStaticKey] = useState(0);
@@ -483,6 +570,8 @@ const App = ({ config, settings, startupWarnings = [], chatManager }: AppProps) 
       const trimmedValue = submittedValue.trim();
       if (trimmedValue.length > 0) {
         submitQuery(trimmedValue);
+        // Note: We don't save immediately here anymore, we wait for the AI response to complete
+        // This prevents saving incomplete conversations
       }
     },
     [submitQuery],
@@ -491,30 +580,72 @@ const App = ({ config, settings, startupWarnings = [], chatManager }: AppProps) 
   const logger = useLogger();
   const [userMessages, setUserMessages] = useState<string[]>([]);
 
+  // Track if we're currently restoring history to prevent auto-save during restoration
+  const [isRestoringHistory, setIsRestoringHistory] = useState(false);
+
   // Auto-save chat conversation history
   useEffect(() => {
     const saveChatHistory = async () => {
-      if (!chatManager || !chatManager.isEnabled() || history.length === 0) return;
+      if (!chatManager || !chatManager.isEnabled() || isRestoringHistory) return;
 
       try {
         // Get the chat history from the Gemini client
         const chat = config.getGeminiClient().getChat();
         const conversationHistory = chat.getHistory();
 
-        if (conversationHistory.length > 0) {
+        // Save if there's more than just the environment context (more than 2 messages)
+        // or if there are any user interactions beyond the initial setup
+        if (conversationHistory.length > 2) {
+          console.log(`Auto-save triggered: ${conversationHistory.length} messages in chat history`);
           await chatManager.saveChatHistory(conversationHistory);
           // Auto-update chat name if needed
           await chatManager.updateChatNameIfNeeded(conversationHistory, config);
+        } else {
+          console.log(`Auto-save skipped: only ${conversationHistory.length} messages (need > 2)`);
         }
       } catch (error) {
         console.warn('Failed to auto-save chat history:', error);
       }
     };
 
-    // Debounce the save operation to avoid too frequent saves
-    const timeoutId = setTimeout(saveChatHistory, 2000); // Save 2 seconds after last change
-    return () => clearTimeout(timeoutId);
-  }, [history, chatManager, config]);
+    // Only trigger auto-save if there are actual UI history items and we're not restoring
+    if (history.length > 0 && !isRestoringHistory) {
+      // Debounce the save operation to avoid too frequent saves
+      const timeoutId = setTimeout(saveChatHistory, 2000); // Save 2 seconds after last change
+      return () => clearTimeout(timeoutId);
+    }
+  }, [history, chatManager, config, isRestoringHistory]);
+
+  // Save chat history when streaming completes
+  const [lastStreamingState, setLastStreamingState] = useState(streamingState);
+  useEffect(() => {
+    // Only trigger save when transitioning from Responding to Idle and not restoring history
+    if (lastStreamingState === StreamingState.Responding &&
+        streamingState === StreamingState.Idle &&
+        chatManager && chatManager.isEnabled() && !isRestoringHistory) {
+
+      console.log('AI response completed, triggering immediate save...');
+      // Save immediately when AI response is complete
+      setTimeout(async () => {
+        try {
+          const chat = config.getGeminiClient().getChat();
+          const conversationHistory = chat.getHistory();
+          console.log(`Post-response save: ${conversationHistory.length} messages in chat history`);
+
+          if (conversationHistory.length > 2) {
+            await chatManager.saveChatHistory(conversationHistory);
+            await chatManager.updateChatNameIfNeeded(conversationHistory, config);
+            console.log('Post-response save completed successfully');
+          } else {
+            console.log(`Post-response save skipped: only ${conversationHistory.length} messages`);
+          }
+        } catch (error) {
+          console.warn('Failed to save chat history after response:', error);
+        }
+      }, 500); // Save 500ms after response completes
+    }
+    setLastStreamingState(streamingState);
+  }, [streamingState, lastStreamingState, chatManager, config, isRestoringHistory]);
 
 
 

@@ -53,6 +53,17 @@ export class ChatManager {
       const chats = this.getAllChats();
       this.currentChat = chats.find(c => c.id === this.config.currentChatId) || null;
     }
+    
+    // Auto-load the last chat if autoLoad is enabled and no current chat is set
+    if (!this.currentChat && this.config.autoLoad && this.isEnabled()) {
+      const lastChat = this.getLastChat();
+      if (lastChat) {
+        this.currentChat = lastChat;
+        this.config.currentChatId = lastChat.id;
+        this.saveConfig();
+        console.log(`Auto-loaded last chat: ${lastChat.name}`);
+      }
+    }
   }
 
   private findConfigPath(): string {
@@ -261,16 +272,100 @@ export class ChatManager {
 
     try {
       const historyPath = this.getChatHistoryPath(this.currentChat.id);
-      await fs.promises.writeFile(historyPath, JSON.stringify(history, null, 2));
-      
-      this.currentChat.messageCount = history.length;
+
+      // Validate and clean the history before saving
+      const cleanHistory = this.validateAndCleanHistory(history);
+
+      // Create a backup of existing history before overwriting
+      if (fs.existsSync(historyPath)) {
+        const backupPath = historyPath.replace('.json', '.backup.json');
+        try {
+          await fs.promises.copyFile(historyPath, backupPath);
+        } catch (backupError) {
+          console.warn('Failed to create backup of chat history:', backupError);
+        }
+      }
+
+      await fs.promises.writeFile(historyPath, JSON.stringify(cleanHistory, null, 2));
+
+      this.currentChat.messageCount = cleanHistory.length;
       this.currentChat.lastUsed = Date.now();
       this.saveChat(this.currentChat);
-      
-      console.log(`Saved chat history for: ${this.currentChat.name} (${history.length} messages)`);
+
+      console.log(`Saved chat history for: ${this.currentChat.name} (${cleanHistory.length} messages, original: ${history.length})`);
+      console.log(`History file path: ${historyPath}`);
+
+      // Log the first few and last few messages for debugging
+      if (cleanHistory.length > 0) {
+        const firstMessage = cleanHistory[0];
+        const lastMessage = cleanHistory[cleanHistory.length - 1];
+        console.log(`First message: ${firstMessage.role} - ${firstMessage.parts?.[0]?.text?.substring(0, 100)}...`);
+        console.log(`Last message: ${lastMessage.role} - ${lastMessage.parts?.[0]?.text?.substring(0, 100)}...`);
+        
+        // Check if environment context is present
+        if (cleanHistory.length >= 2) {
+          const isEnvContext = firstMessage.role === 'user' &&
+            firstMessage.parts?.[0]?.text?.includes('This is the Gemini CLI. We are setting up the context for our chat.') &&
+            cleanHistory[1].role === 'model' &&
+            cleanHistory[1].parts?.[0]?.text?.includes('Got it. Thanks for the context!');
+          console.log(`Environment context detected in saved history: ${isEnvContext}`);
+        }
+      }
     } catch (error) {
       console.error('Failed to save chat history:', error);
     }
+  }
+
+  // Validate and clean history to ensure it's properly formatted
+  private validateAndCleanHistory(history: Content[]): Content[] {
+    const cleanHistory: Content[] = [];
+
+    for (let i = 0; i < history.length; i++) {
+      const content = history[i];
+
+      // Skip invalid entries
+      if (!content || !content.role || !content.parts || !Array.isArray(content.parts)) {
+        console.warn(`Skipping invalid history entry at index ${i}:`, content);
+        continue;
+      }
+
+      // Ensure role is valid
+      if (content.role !== 'user' && content.role !== 'model') {
+        console.warn(`Skipping entry with invalid role at index ${i}: ${content.role}`);
+        continue;
+      }
+
+      // Ensure parts have valid content
+      const validParts = content.parts.filter(part =>
+        part && (
+          (part.text && part.text.trim().length > 0) ||
+          part.functionCall ||
+          part.functionResponse
+        )
+      );
+
+      if (validParts.length === 0) {
+        console.warn(`Skipping entry with no valid parts at index ${i}: ${JSON.stringify(content)}`);
+        continue;
+      }
+
+      // Additional check: ensure text content is meaningful
+      if (validParts.length === 1 && validParts[0].text) {
+        const text = validParts[0].text.trim();
+        if (text.length === 0) {
+          console.warn(`Skipping entry with empty text at index ${i}`);
+          continue;
+        }
+      }
+
+      // Add cleaned entry
+      cleanHistory.push({
+        role: content.role,
+        parts: validParts
+      });
+    }
+
+    return cleanHistory;
   }
 
   // Load conversation history for the current chat
@@ -282,16 +377,69 @@ export class ChatManager {
 
     try {
       const historyPath = this.getChatHistoryPath(this.currentChat.id);
-      
+
       if (!fs.existsSync(historyPath)) {
         return [];
       }
 
       const historyData = await fs.promises.readFile(historyPath, 'utf8');
-      const history = JSON.parse(historyData) as Content[];
+      let history: Content[];
+
+      try {
+        history = JSON.parse(historyData) as Content[];
+      } catch (parseError) {
+        console.error('Failed to parse chat history JSON:', parseError);
+
+        // Try to load backup if main file is corrupted
+        const backupPath = historyPath.replace('.json', '.backup.json');
+        if (fs.existsSync(backupPath)) {
+          console.log('Attempting to load from backup...');
+          const backupData = await fs.promises.readFile(backupPath, 'utf8');
+          history = JSON.parse(backupData) as Content[];
+          console.log('Successfully loaded from backup');
+        } else {
+          return [];
+        }
+      }
+
+      // Validate and clean the loaded history
+      const cleanHistory = this.validateAndCleanHistory(history);
+
+      // Only save cleaned version if there were significant issues (more than 20% of messages removed)
+      // This prevents accidental overwriting of valid history due to minor formatting issues
+      if (cleanHistory.length !== history.length) {
+        const removalPercentage = (history.length - cleanHistory.length) / history.length;
+        console.log(`Cleaned history: ${history.length} -> ${cleanHistory.length} messages (${(removalPercentage * 100).toFixed(1)}% removed)`);
+
+        if (removalPercentage > 0.2) {
+          console.log('Significant corruption detected, saving cleaned version');
+          await this.saveChatHistory(cleanHistory);
+        } else {
+          console.log('Minor issues detected, keeping original history to prevent data loss');
+        }
+      }
+
+      console.log(`Loaded chat history for: ${this.currentChat.name} (${cleanHistory.length} messages, original: ${history.length})`);
+      console.log(`History file path: ${historyPath}`);
       
-      console.log(`Loaded chat history for: ${this.currentChat.name} (${history.length} messages)`);
-      return history;
+      // Log the first few and last few messages for debugging
+      if (cleanHistory.length > 0) {
+        const firstMessage = cleanHistory[0];
+        const lastMessage = cleanHistory[cleanHistory.length - 1];
+        console.log(`First loaded message: ${firstMessage.role} - ${firstMessage.parts?.[0]?.text?.substring(0, 100)}...`);
+        console.log(`Last loaded message: ${lastMessage.role} - ${lastMessage.parts?.[0]?.text?.substring(0, 100)}...`);
+        
+        // Check if environment context is present
+        if (cleanHistory.length >= 2) {
+          const isEnvContext = firstMessage.role === 'user' &&
+            firstMessage.parts?.[0]?.text?.includes('This is the Gemini CLI. We are setting up the context for our chat.') &&
+            cleanHistory[1].role === 'model' &&
+            cleanHistory[1].parts?.[0]?.text?.includes('Got it. Thanks for the context!');
+          console.log(`Environment context detected in loaded history: ${isEnvContext}`);
+        }
+      }
+      
+      return cleanHistory;
     } catch (error) {
       console.error('Failed to load chat history:', error);
       return [];
