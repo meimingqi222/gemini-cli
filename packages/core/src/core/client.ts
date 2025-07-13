@@ -36,6 +36,8 @@ import {
   ContentGenerator,
   ContentGeneratorConfig,
   createContentGenerator,
+  checkAndResetApiKeyRotation,
+  createContentGeneratorConfig,
 } from './contentGenerator.js';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
 import { DEFAULT_GEMINI_FLASH_MODEL } from '../config/models.js';
@@ -271,6 +273,25 @@ export class GeminiClient {
     turns: number = this.MAX_TURNS,
     originalModel?: string,
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
+    // Check if API key has been rotated and refresh content generator if needed
+    if (checkAndResetApiKeyRotation()) {
+      try {
+        const newConfig = await createContentGeneratorConfig(
+          this.config.getModel(),
+          this.config.getContentGeneratorConfig()?.authType
+        );
+        this.contentGenerator = await createContentGenerator(
+          newConfig,
+          this.config,
+          this.config.getSessionId(),
+        );
+        // Update the chat with the new content generator
+        this.chat = await this.startChat();
+      } catch (error) {
+        console.error('Failed to refresh content generator after API key rotation:', error);
+      }
+    }
+
     this.sessionTurnCount++;
     if (
       this.config.getMaxSessionTurns() > 0 &&

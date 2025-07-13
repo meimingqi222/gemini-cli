@@ -200,6 +200,15 @@ export async function main() {
 
   // Render UI, passing necessary config values. Check that there is no command line question.
   if (shouldBeInteractive) {
+    // Validate authentication for interactive mode to initialize API key manager
+    if (settings.merged.selectedAuthType) {
+      const err = validateAuthMethod(settings.merged.selectedAuthType);
+      if (err != null) {
+        console.error(err);
+        process.exit(1);
+      }
+    }
+
     const version = await getCliVersion();
     setWindowTitle(basename(workspaceRoot), settings);
     const instance = render(

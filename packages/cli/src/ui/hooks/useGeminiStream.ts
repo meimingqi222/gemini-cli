@@ -25,6 +25,10 @@ import {
   UnauthorizedError,
   UserPromptEvent,
   DEFAULT_GEMINI_FLASH_MODEL,
+  rotateApiKey,
+  reportApiKeyError,
+  getCurrentApiKeyInfo,
+  hasMultipleApiKeys,
 } from '@google/gemini-cli-core';
 import { type Part, type PartListUnion } from '@google/genai';
 import {
@@ -531,6 +535,14 @@ export const useGeminiStream = (
       if (!options?.isContinuation) {
         setModelSwitchedFromQuotaError(false);
         config.setQuotaErrorOccurred(false);
+
+        // Rotate API key for new user queries (not continuations)
+        if (hasMultipleApiKeys()) {
+          const rotationResult = rotateApiKey();
+          if (rotationResult.rotated && rotationResult.keyInfo) {
+            console.log(`🔄 Switched to ${rotationResult.keyInfo}`);
+          }
+        }
       }
 
       abortControllerRef.current = new AbortController();
@@ -583,11 +595,18 @@ export const useGeminiStream = (
         if (error instanceof UnauthorizedError) {
           onAuthError();
         } else if (!isNodeError(error) || error.name !== 'AbortError') {
+          const errorMessage = getErrorMessage(error) || 'Unknown error';
+
+          // Report error to API key manager if we have multiple keys
+          if (hasMultipleApiKeys()) {
+            reportApiKeyError(errorMessage);
+          }
+
           addItem(
             {
               type: MessageType.ERROR,
               text: parseAndFormatApiError(
-                getErrorMessage(error) || 'Unknown error',
+                errorMessage,
                 config.getContentGeneratorConfig()?.authType,
                 undefined,
                 config.getModel(),

@@ -80,6 +80,7 @@ import ansiEscapes from 'ansi-escapes';
 import { OverflowProvider } from './contexts/OverflowContext.js';
 import { ShowMoreLines } from './components/ShowMoreLines.js';
 import { PrivacyNotice } from './privacy/PrivacyNotice.js';
+import { ApiStatusDisplay } from './components/ApiStatusDisplay.js';
 
 const CTRL_EXIT_PROMPT_DURATION_MS = 1000;
 
@@ -881,12 +882,15 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
                       Press Ctrl+D again to exit.
                     </Text>
                   ) : (
-                    <ContextSummaryDisplay
-                      geminiMdFileCount={geminiMdFileCount}
-                      contextFileNames={contextFileNames}
-                      mcpServers={config.getMcpServers()}
-                      showToolDescriptions={showToolDescriptions}
-                    />
+                    <>
+                      <ContextSummaryDisplay
+                        geminiMdFileCount={geminiMdFileCount}
+                        contextFileNames={contextFileNames}
+                        mcpServers={config.getMcpServers()}
+                        showToolDescriptions={showToolDescriptions}
+                      />
+                      <ApiStatusDisplay visible={!showHelp} />
+                    </>
                   )}
                 </Box>
                 <Box>
